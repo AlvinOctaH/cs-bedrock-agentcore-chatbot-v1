@@ -26,6 +26,20 @@ The official starter repository (already migrated to AgentCore) is here: `https:
 
 The prompt also includes hardening against prompt-injection attempts (e.g. "ignore your previous instructions"), addressing one of the project's stand-out suggestions.
 
+## Screenshots
+
+![FAQ question answered correctly](screenshots/06_chat_faq_covered.png)
+
+![Multi-turn bug report collected and filed](screenshots/04_chat_bug_report.png)
+
+![Prompt-injection attempt blocked by Guardrails](screenshots/11_guardrail_blocked.png)
+
+![Automated Bedrock Evaluations results](screenshots/09_bedrock_evaluation_results.png)
+
+![Off-topic request handed off to human support](screenshots/08_chat_other_request.png)
+
+The full evidence set (including Lambda/DynamoDB verification and Guardrail configuration) is in the [Evidence index](#evidence-index) below.
+
 ## Architecture
 
 - **AWS Lambda** (`create_bug_report.py`) — writes bug reports to DynamoDB
