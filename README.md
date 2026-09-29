@@ -1,90 +1,264 @@
-# Customer Support Chatbot — Amazon Bedrock AgentCore
+# Project: Customer Support Chatbot with the Amazon Bedrock AgentCore Harness
 
-A customer support chatbot for a fictional online shop, built on the **Amazon Bedrock AgentCore managed harness**. It routes every incoming customer message to one of three behaviors — bug report collection, FAQ answering, or a polite hand-off — using a single system prompt, with no separate classifier or condition nodes.
+**Udacity — AWS Agentic AI Nanodegree — Course 1 Project (Prompting & LLM Reasoning)**
 
-## ⚠️ A note on terminology (please read before reviewing)
+> **Status:** complete · three routes working in `chat.py` · Bedrock Evaluations
+> Correctness **0.72** (9 prompts) · stand-out: injection hardening, edge-case tests,
+> Guardrail · full rebuild guide in [`docs/`](docs/00-overview.md)
 
-This project's official rubric still refers to **Bedrock Flows**, **Classifier nodes**, and **Condition nodes**. This is because Bedrock Agents Classic — the service the course originally used — was closed to new customers on July 30, 2026. The course was updated to use its successor, **Bedrock AgentCore**, but the rubric text was not fully updated to match. The table below maps the rubric's terminology to what is actually implemented in this submission.
+## Contents
 
-| Rubric term (Bedrock Flow era) | What's actually implemented (AgentCore) |
+1. [Overview](#overview)
+2. [Architecture](#architecture)
+3. [Project Structure](#project-structure)
+4. [Quick Start](#quick-start)
+5. [Step-by-Step Build](#step-by-step-build)
+6. [Testing & Evidence](#testing--evidence)
+7. [Stand-out Extensions](#stand-out-extensions)
+8. [Rubric Mapping](#rubric-mapping)
+9. [Submission Checklist](#submission-checklist)
+10. [Study Notes](#study-notes)
+11. [Clean Up](#clean-up-after-grading)
+12. [References](#references)
+
+---
+
+## Overview
+
+A customer support chatbot for a fictional online shop, built on the **Amazon Bedrock
+AgentCore managed harness**. It routes every message to one of three behaviours —
+using **one system prompt**, with no separate classifier or condition nodes:
+
+1. **Bug reports** — collects `description`, `stepsToReproduce` and `environment`
+   across a multi-turn conversation (one missing field at a time), calls the
+   `create_bug_report` tool through an **AgentCore Gateway** to file a ticket in
+   DynamoDB, and relays the real ticket ID.
+2. **Platform questions** (orders, shipping, returns, payments, …) — answered strictly
+   from the embedded FAQ (`online_shop_faq.md` via `{{FAQ}}`); questions the FAQ
+   doesn't cover are handed off instead of guessed.
+3. **Anything else** — politely redirected to the human support line
+   (1-800-555-0199, Mon–Fri).
+
+### A note on terminology (for reviewers)
+
+The rubric still refers to **Bedrock Flows**, **Classifier nodes** and **Condition
+nodes** because Bedrock Agents Classic closed to new customers on 30 July 2026 and the
+course moved to its successor, **Bedrock AgentCore**.
+
+| Rubric term (Bedrock Flow era) | What is implemented (AgentCore) |
 |---|---|
-| Bedrock Flow | `system_prompt.txt` — a single system prompt |
-| Classifier node / prompt | The routing instructions inside `system_prompt.txt` |
-| Condition node expressions | Natural-language conditional instructions in the prompt (no visual node graph) |
-| Separate Output node per path | Three behaviors handled within one response: bug report, FAQ answer, hand-off |
-| "Bug Report Agent" | The `create_bug_report` tool, invoked via an AgentCore Gateway, defined in the same prompt |
-| `flow-tests.json` | `harness-tests.json` |
-| Flow diagram screenshot | `system_prompt.txt` content + `chat.py` conversation transcripts showing routing in action |
+| Bedrock Flow | `starter/system_prompt.txt` — a single system prompt run by the managed harness |
+| Classifier node / prompt | The "decide which ONE category" routing instructions in the prompt |
+| Condition node expressions | Natural-language conditional instructions per category |
+| Separate Output node per path | Three behaviours in one response: bug report, FAQ answer, hand-off |
+| "Bug Report Agent" | The `create_bug_report` tool via an AgentCore Gateway |
+| `flow-tests.json` | `starter/harness-tests.json` |
+| Flow diagram screenshot | The prompt + `chat.py` transcripts showing routing in action |
 
-The official starter repository (already migrated to AgentCore) is here: `https://github.com/udacity/aws-c1-prompting-llm-reasoning-nd905-cd14762-project`
-
-## What this chatbot does
-
-1. **Bug reports** — collects `description`, `stepsToReproduce`, and `environment` across a multi-turn conversation (asking for one missing field at a time), then calls the `create_bug_report` tool through an AgentCore Gateway to file a ticket in DynamoDB, and relays the ticket ID to the customer.
-2. **Platform questions** (orders, shipping, returns, payments, etc.) — answered strictly from the embedded FAQ document (`online_shop_faq.md`, injected via the `{{FAQ}}` placeholder). Questions not covered by the FAQ are handed off to a human support line instead of being guessed.
-3. **Anything else** — politely redirected to the human support line (1-800-555-0199, Mon–Fri).
-
-The prompt also includes hardening against prompt-injection attempts (e.g. "ignore your previous instructions"), addressing one of the project's stand-out suggestions.
-
-## Screenshots
-
-![FAQ question answered correctly](screenshots/06_chat_faq_covered.png)
-
-![Multi-turn bug report collected and filed](screenshots/04_chat_bug_report.png)
-
-![Prompt-injection attempt blocked by Guardrails](screenshots/11_guardrail_blocked.png)
-
-![Automated Bedrock Evaluations results](screenshots/09_bedrock_evaluation_results.png)
-
-![Off-topic request handed off to human support](screenshots/08_chat_other_request.png)
-
-The full evidence set (including Lambda/DynamoDB verification and Guardrail configuration) is in the [Evidence index](#evidence-index) below.
+Official starter: <https://github.com/udacity/aws-c1-prompting-llm-reasoning-nd905-cd14762-project>
 
 ## Architecture
 
-- **AWS Lambda** (`create_bug_report.py`) — writes bug reports to DynamoDB
-- **Amazon DynamoDB** — ticket storage (`bug-report-tool-stack-bug-reports`)
-- **AgentCore Gateway** — exposes the Lambda as a tool (`bugreports___create_bug_report`) to the model
-- **AgentCore managed harness** — runs the agent loop, session memory, and tool execution, using `us.amazon.nova-pro-v1:0`
-- **Amazon Bedrock Evaluations** — automated, LLM-as-a-judge testing of the chatbot's responses
-- **Amazon Bedrock Guardrails** *(stand-out)* — an independent content-safety layer blocking harmful content and prompt-injection attempts before they reach the model
+```
+Customer ── chat.py / generate-eval-dataset.py ──► AgentCore managed harness "support_chatbot"
+                                                     │  model us.amazon.nova-pro-v1:0 (greedy decoding)
+                                                     │  system prompt + FAQ · session memory
+                                                     ▼
+                                          AgentCore Gateway (MCP, AWS_IAM)
+                                                     │  bugreports___create_bug_report
+                                                     ▼
+                                          Lambda create_bug_report ──► DynamoDB (tickets)
 
-## Files in this submission
+Testing: harness-tests.json → output_eval_dataset.jsonl → S3 → Bedrock Evaluations (LLM-as-a-judge)
+Safety:  Bedrock Guardrail (content + prompt-attack filters) attached on every invoke
+```
 
-| File | Description |
+| Component | Role |
 |---|---|
-| `system_prompt.txt` | The chatbot's system prompt — the main deliverable |
-| `harness-tests.json` | 9 test cases covering all three routes plus edge cases (ambiguous message, very short message, prompt injection) |
-| `output_eval_dataset.jsonl` | Output of `generate-eval-dataset.py`, used as input to Bedrock Evaluations |
-| `observations.md` | Written analysis of the evaluation results, including known weaknesses and the debugging process |
-| `screenshots/` | Evidence for every rubric criterion (see below) |
+| **AgentCore managed harness** | Agent loop, session memory, tool execution with `us.amazon.nova-pro-v1:0` |
+| **AgentCore Gateway** | Exposes the Lambda as the tool `bugreports___create_bug_report` |
+| **AWS Lambda** (`create_bug_report.py`) | Writes bug reports to DynamoDB, returns a `ticketId` |
+| **Amazon DynamoDB** | Ticket storage (`bug-report-tool-stack-bug-reports`) |
+| **Amazon Bedrock Evaluations** | Automated LLM-as-a-judge scoring (`Builtin.Correctness`) |
+| **Amazon Bedrock Guardrails** *(stand-out)* | Independent layer blocking harmful content and prompt attacks |
 
-## Evidence index
+## Project Structure
 
-| # | File | What it shows |
+```
+cs-bedrock-agentcore-chatbot-v1/
+├── README.md                       ← this file
+├── observations.md                 ← written analysis of the evaluation (deliverable)
+├── docs/                           ← step-by-step rebuild guide (00-overview … 08-troubleshooting)
+├── screenshots/                    ← evidence for every criterion
+└── starter/
+    ├── system_prompt.txt           ← ⭐ main deliverable: the chatbot's behaviour
+    ├── harness-tests.json          ← ⭐ test suite (9 cases incl. 3 edge cases)
+    ├── output_eval_dataset.jsonl   ← ⭐ generated evaluation dataset
+    ├── chat.py                     ← terminal chat client (+ Guardrail attached)
+    ├── create_harness.py           ← create/update the harness from the prompt
+    ├── setup_gateway.py            ← create the gateway + register the tool
+    ├── generate-eval-dataset.py    ← run the test suite → JSONL
+    ├── eval-config.json / inference-config.json / output-config.json  ← evaluation job config
+    ├── cloudformation-tool.yaml    ← DynamoDB + Lambda + IAM roles
+    ├── cloudformation-testing.yaml ← S3 bucket + evaluation role
+    ├── create_bug_report.py        ← Lambda code
+    ├── online_shop_faq.md          ← FAQ embedded in the prompt
+    ├── harness-tests-template.json · cleanup_agentcore.py · requirements.txt
+```
+
+Provided starter files are unchanged except `system_prompt.txt` (written), `chat.py`
+(Guardrail attached) and the added test suite / evaluation configs.
+
+---
+
+## Quick Start
+
+For someone running it for the first time (full explanation in [`docs/`](docs/00-overview.md)):
+
+```bash
+# 0. AWS CLI (us-east-1), Python 3.9+, Nova Pro model access
+cd starter
+pip install -r requirements.txt
+
+# 1. Tool + gateway                                     → docs/02
+aws cloudformation deploy --template-file cloudformation-tool.yaml \
+  --stack-name bug-report-tool-stack --capabilities CAPABILITY_NAMED_IAM --region us-east-1
+python setup_gateway.py
+
+# 2. Harness from the prompt, then chat                 → docs/03, docs/04
+python create_harness.py
+python chat.py
+
+# 3. Automated evaluation                               → docs/05
+python generate-eval-dataset.py --tests-json harness-tests.json
+```
+
+---
+
+## Step-by-Step Build
+
+| Step | What | Notes |
 |---|---|---|
-| 1 | `screenshots/02_lambda_test_result.png` | Manual test of the `create_bug_report` Lambda in isolation |
-| 2 | `screenshots/03_dynamodb_item.png` | Ticket created by the manual Lambda test, visible in DynamoDB |
-| 3 | `screenshots/04_chat_bug_report.png` | Full `chat.py` conversation: multi-turn bug report collection ending in a `[tool call]` and a ticket ID |
-| 4 | `screenshots/05_dynamodb_scan_from_chat.png` | DynamoDB scan confirming the ticket from the chatbot conversation (not the manual test) was persisted |
-| 5 | `screenshots/06_chat_faq_covered.png` | A platform question answered correctly from the FAQ |
-| 6 | `screenshots/07_chat_faq_uncovered.png` | A platform question not covered by the FAQ, correctly handed off to human support |
-| 7 | `screenshots/08_chat_other_request.png` | An off-topic request correctly redirected to human support |
-| 8 | `screenshots/09_bedrock_evaluation_results.png` | Bedrock Evaluations job results (Builtin.Correctness score, 9 prompts) |
-| 9 | `screenshots/10_guardrail_config.png` | Bedrock Guardrail configuration — content filters and prompt-attack filter, all enabled |
-| 10 | `screenshots/11_guardrail_blocked.png` | Guardrail successfully blocking a prompt-injection attempt |
+| 1 | Deploy `cloudformation-tool.yaml` (DynamoDB, Lambda, gateway role, harness role); test the Lambda in isolation | [docs/02](docs/02-bug-report-tool-and-gateway.md) |
+| 2 | `setup_gateway.py`: AgentCore Gateway (MCP, AWS_IAM) + target `bugreports` with `create_bug_report(description, stepsToReproduce, environment)` | [docs/02](docs/02-bug-report-tool-and-gateway.md) |
+| 3 | Write `system_prompt.txt`: classify-first routing, slot-filling checklist (one question at a time), FAQ-only answers, hand-off, ticket-ID honesty, injection hardening | [docs/03](docs/03-system-prompt.md) |
+| 4 | `create_harness.py` (Nova Pro, greedy decoding, `{{FAQ}}` injected) → iterate with `chat.py` | [docs/04](docs/04-harness-and-chat.md) |
+| 5 | Test suite → `generate-eval-dataset.py` → testing stack → S3 → Bedrock Evaluations | [docs/05](docs/05-bedrock-evaluations.md) |
+| 6 | Guardrail (stand-out) attached in `chat.py` | [docs/07](docs/07-standout.md) |
 
-## Results summary
+---
 
-The final Bedrock Evaluations run scored **~0.72–0.78** on Builtin.Correctness across 9 test prompts (7 scored 1, one scored 0.5, one scored 0). The chatbot reliably handles clear-cut cases in all three routes. Its main weakness is being slightly too eager to file a bug-report ticket on ambiguous or incomplete messages, instead of asking a clarifying question first. Full analysis, including the debugging process and what was tried, is in `observations.md`.
+## Testing & Evidence
 
-## How to run this project
+| # | Evidence | What it shows |
+|---|---|---|
+| 1 | `02_lambda_test_result.png` | `create_bug_report` Lambda tested in isolation |
+| 2 | `03_dynamodb_item.png` | Ticket from the manual Lambda test in DynamoDB |
+| 3 | `04_chat_bug_report.png` | Multi-turn bug report: description → steps → environment → `[tool call]` → ticket ID |
+| 4 | `05_dynamodb_scan_from_chat.png` | The ticket from that chat persisted in DynamoDB |
+| 5 | `06_chat_faq_covered.png` | Platform question answered from the FAQ |
+| 6 | `07_chat_faq_uncovered.png` | Question not in the FAQ handed off to human support |
+| 7 | `08_chat_other_request.png` | Off-topic request redirected to human support |
+| 8 | `09_bedrock_evaluation_results.png` | Bedrock Evaluations — Correctness 0.72 over 9 prompts |
+| 9 | `10_guardrail_config.png` | Guardrail content filters + prompt-attack filter (High, Block) |
+| 10 | `11_guardrail_blocked.png` | Guardrail blocking a prompt-injection attempt |
 
-See the official project instructions in the starter repository linked above (Environment Setup → Instructions → Testing Framework pages) for the full step-by-step: deploying the CloudFormation stacks, creating the AgentCore Gateway, building the harness from `system_prompt.txt`, and running the evaluation pipeline.
+### Bug report conversation → ticket
+![Chat: bug report](screenshots/04_chat_bug_report.png)
 
-## Stand-out suggestions implemented
+### Ticket persisted in DynamoDB
+![DynamoDB scan from chat](screenshots/05_dynamodb_scan_from_chat.png)
 
-- ✅ **Prompt-injection hardening** — explicit instructions in `system_prompt.txt` refusing to reveal the prompt or change behavior based on customer instructions
-- ✅ **Edge-case tests** — `harness-tests.json` includes an ambiguous message, a very short message, and a prompt-injection attempt
-- ✅ **Guardrails** — an Amazon Bedrock Guardrail with content filters and a prompt-attack filter, both set to block, configured as an independent safety layer
-- ⬜ Bedrock Knowledge Base (not implemented — out of scope for this submission's timeline; the FAQ remains embedded directly in the prompt as described in the project instructions)
+### FAQ question answered
+![Chat: FAQ covered](screenshots/06_chat_faq_covered.png)
+
+### FAQ-uncovered question handed off
+![Chat: FAQ uncovered](screenshots/07_chat_faq_uncovered.png)
+
+### Other request handed off
+![Chat: other request](screenshots/08_chat_other_request.png)
+
+### Bedrock Evaluations results
+![Bedrock Evaluations](screenshots/09_bedrock_evaluation_results.png)
+
+### Results summary
+
+Final runs scored **~0.72–0.78** on `Builtin.Correctness` across 9 prompts. The chatbot
+reliably handles clear-cut cases in all three routes; its main weakness is filing a
+ticket too eagerly on ambiguous or incomplete messages instead of asking a clarifying
+question. Full analysis, including what was tried: [`observations.md`](observations.md).
+
+---
+
+## Stand-out Extensions
+
+| Suggestion | Status | Where / evidence |
+|---|---|---|
+| Prompt-injection hardening | ✅ | Final rules block of `starter/system_prompt.txt`; test `t9` scored 1 |
+| Edge-case tests | ✅ | `t7` ambiguous, `t8` very short, `t9` injection in `starter/harness-tests.json` |
+| Bedrock Guardrails | ✅ | Content filters + prompt-attack filter (High, Block), attached in `starter/chat.py` — [config](screenshots/10_guardrail_config.png), [blocked](screenshots/11_guardrail_blocked.png) |
+| Bedrock Knowledge Base for the FAQ | ⬜ | FAQ stays embedded in the prompt, as the instructions describe |
+
+![Guardrail blocking a prompt injection](screenshots/11_guardrail_blocked.png)
+
+Details: [docs/07-standout.md](docs/07-standout.md).
+
+---
+
+## Rubric Mapping
+
+| Criterion (AgentCore equivalent) | Where |
+|---|---|
+| Routing of the three request types | `starter/system_prompt.txt` — "decide which ONE of these three categories" + categories 1–3 |
+| Bug report: collect description, steps, environment before calling the tool | Category 1 of the prompt; `04_chat_bug_report.png` |
+| Tool invoked and ticket stored | `[tool call] bugreports___create_bug_report` in `04_chat_bug_report.png`; `05_dynamodb_scan_from_chat.png` |
+| Platform questions answered from the FAQ only | Category 2 + `{{FAQ}}`; `06_chat_faq_covered.png` |
+| Uncovered / other requests handed off | Categories 2→3 and 3; `07_chat_faq_uncovered.png`, `08_chat_other_request.png` |
+| Tool resources (Lambda, DynamoDB, gateway) | `starter/cloudformation-tool.yaml`, `starter/setup_gateway.py`; `02_lambda_test_result.png`, `03_dynamodb_item.png` |
+| Test suite covering all routes | `starter/harness-tests.json` (9 cases) |
+| Automated evaluation | `starter/output_eval_dataset.jsonl`, evaluation configs, `09_bedrock_evaluation_results.png` |
+| Written analysis of results | [`observations.md`](observations.md) |
+
+---
+
+## Submission Checklist
+
+- [x] `starter/system_prompt.txt` handling bug reports, platform questions and other requests
+- [x] Bug report tool + gateway deployed and verified (Lambda test, DynamoDB items)
+- [x] Multi-turn bug report ending in a real ticket ID
+- [x] FAQ-covered, FAQ-uncovered and other-request conversations
+- [x] `starter/harness-tests.json` and `starter/output_eval_dataset.jsonl`
+- [x] Bedrock Evaluations job + `observations.md`
+- [x] Evidence screenshots
+
+## Study Notes
+
+| | |
+|---|---|
+| [00 Overview](docs/00-overview.md) | [05 Bedrock Evaluations](docs/05-bedrock-evaluations.md) |
+| [01 Setup](docs/01-setup.md) | [06 Testing & submission](docs/06-testing-and-submission.md) |
+| [02 Bug report tool & gateway](docs/02-bug-report-tool-and-gateway.md) | [07 Stand-out](docs/07-standout.md) |
+| [03 System prompt](docs/03-system-prompt.md) | [08 Troubleshooting](docs/08-troubleshooting.md) |
+| [04 Harness & chat](docs/04-harness-and-chat.md) | |
+
+## Clean Up (after grading)
+
+```bash
+cd starter
+python cleanup_agentcore.py
+aws cloudformation delete-stack --stack-name bug-report-tool-stack --region us-east-1
+aws s3 rm s3://udacity-agentic-engineer-c1-eval-<account> --recursive   # empty the bucket first
+aws cloudformation delete-stack --stack-name bug-report-testing-stack --region us-east-1
+```
+
+Also delete the Guardrail `bug-report-chatbot-guardrail`. Details:
+[docs/06](docs/06-testing-and-submission.md#4-clean-up).
+
+## References
+
+- [AgentCore managed harness](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/harness.html) · [AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway.html)
+- [Bedrock Evaluations](https://docs.aws.amazon.com/bedrock/latest/userguide/evaluation.html) · [Bedrock Guardrails](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html)
+
+## License
+
+Starter code © Udacity — see [LICENSE.md](LICENSE.md).
